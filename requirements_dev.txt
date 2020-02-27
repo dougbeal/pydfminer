@@ -1,0 +1,8 @@
+-f requirements_dev.txt
+distro==1.4.0
+numpy==1.18.1
+pandas==1.0.1
+python-dateutil==2.8.1
+pytz==2019.3
+six==1.14.0
+-e git+https://github.com/dougbeal/tabula-py.git@e11d6f0ac518810b6d92b60a815e34f32f6bf085#egg=tabula_py

@@ -3,8 +3,10 @@ import pdb
 import traceback
 from pprint import pprint
 
+
 import tabula
 import fire
+from statemachine import StateMachine, State
 
 """
 # institution classifier
@@ -23,6 +25,36 @@ import fire
 ### stripe
 ### paypal
 """
+
+class Institution(StateMachine):
+    def __init__(self, doc):
+        self.document = doc
+        self.states = [
+                       State('pre', initial=True),
+                       State('post')
+                       ]
+
+class InstitutionWithSimpleHeaders(Institution):
+    def __init__(self, headers, doc):
+        super().__init__(doc)
+        
+        
+BECU = {
+    "Summary of Deposit Account Activity": {
+        { 'headers': {
+            'lines': 2 },
+         'accounts': {
+             'lines': -1 },
+         
+            }
+                                            },
+    "Deposit Account Activity": {
+        },
+    "Deposit Account Activity (continued)":{
+        },
+        
+}
+        
 
 def is_becu(pages):
     for page in pages: 

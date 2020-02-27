@@ -8,23 +8,23 @@ import tabula
 import fire
 from statemachine import StateMachine, State
 
-"""
+
 # institution classifier
 ## bank
-- page
-- statement period
-- entitity
-- accounts
-- fees
-- deposits
-- withdrawls
+# - page
+# - statement period
+# - entitity
+# - accounts
+# - fees
+# - deposits
+# - withdrawls
 
 ### becu [pdf parse]
 ## financial services
 ### square [connect to api?]
 ### stripe
 ### paypal
-"""
+
 
 class Institution(StateMachine):
     def __init__(self, doc):
@@ -37,27 +37,42 @@ class Institution(StateMachine):
 class InstitutionWithSimpleHeaders(Institution):
     def __init__(self, headers, doc):
         super().__init__(doc)
-        
-        
-BECU = {
-    "Summary of Deposit Account Activity": {
-        { 'headers': {
-            'lines': 2 },
-         'accounts': {
-             'lines': -1 },
-         
-            }
-                                            },
-    "Deposit Account Activity": {
-        },
-    "Deposit Account Activity (continued)":{
-        },
-        
-}
-        
+
+class BECU(InstitutionWithSimpleHeaders):
+    def __init__(self, headers, doc):
+        super().__init__(doc)
+
+class Section():
+    pass
+
+class BECUPre(Section):
+    pass
+    # Statement Period:
+    # address?
+
+class BECUSummary(Section):
+    pass
+
+
+# BECU = {
+#     "Summary of Deposit Account Activity": {
+#         { 'headers': {
+#             'lines': 2 },
+#          'accounts': {
+#              'lines': -1 },
+
+#             }
+#                                             },
+#     "Deposit Account Activity": {
+#         },
+#     "Deposit Account Activity (continued)":{
+#         },
+
+# }
+
 
 def is_becu(pages):
-    for page in pages: 
+    for page in pages:
         for row in page['data']:
             for col in row:
                 if 'becu' in col['text'].lower():
@@ -69,7 +84,7 @@ def is_becu_section(text):
         if text.lower().startswith(section_keyword):
             return section_keyword.split(' ')[0]
     return False
-                
+
 def regions(pdf='/Volumes/2019 Google Drive/Google Drive/foolscap/archive/Financial Accounts/BECU/2020/becu  2020-01-01 2020-01-31 littlecatz Estatement.pdf'):
     pdf_json = tabula.read_pdf(pdf, pages='all', output_format='json', multiple_tables=True, relative_area=True, area=[0,0,100,100], lattice=False, stream=True)
     #print(json.dumps(pdf_json, indent=2))
@@ -90,13 +105,13 @@ def regions(pdf='/Volumes/2019 Google Drive/Google Drive/foolscap/archive/Financ
                     else:
                         if section:
                             section.setdefault('text', []).append(col)
- 
+
     if section:
-        sections.append(section)                        
+        sections.append(section)
     pprint(sections)
 
-                    
-            
+
+
 
 
 if __name__ == '__main__':
@@ -104,4 +119,4 @@ if __name__ == '__main__':
         fire.Fire()
     except:
         traceback.print_exc()
-        pdb.post_mortem()        
+        pdb.post_mortem()

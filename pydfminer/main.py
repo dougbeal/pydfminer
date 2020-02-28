@@ -26,8 +26,8 @@ import tabula
 
 
 class Institution(StateMachine):
-    def __init__(self, doc):
-        self.document = doc
+    def __init__(self, document_structure_tree):
+        self.document = document_structure_tree
         self.states = [
                        State('pre', initial=True),
                        State('post')
@@ -41,7 +41,15 @@ class BECU(InstitutionWithSimpleHeaders):
     def __init__(self, headers, doc):
         super().__init__(doc)
 
+
+class Document(Node):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
 class Section(Node):
+    pass
+
+class NamedSection(Node):
     pass
 
 class BECUPre(Section):

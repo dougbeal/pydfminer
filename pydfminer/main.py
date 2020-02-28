@@ -1,13 +1,12 @@
+from pprint import pprint
 import json
 import pdb
 import traceback
-from pprint import pprint
 
-
-import tabula
-import fire
+from anytree import Node, RenderTree
 from statemachine import StateMachine, State
-
+import fire
+import tabula
 
 # institution classifier
 ## bank
@@ -42,7 +41,7 @@ class BECU(InstitutionWithSimpleHeaders):
     def __init__(self, headers, doc):
         super().__init__(doc)
 
-class Section():
+class Section(Node):
     pass
 
 class BECUPre(Section):
@@ -51,7 +50,9 @@ class BECUPre(Section):
     # address?
 
 class BECUSummary(Section):
-    pass
+    def __init__(self, label):
+        super().__init__()
+        self.label = label
 
 
 # BECU = {

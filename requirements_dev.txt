@@ -8,3 +8,4 @@ six==1.14.0
 -e git+https://github.com/dougbeal/tabula-py.git@e11d6f0ac518810b6d92b60a815e34f32f6bf085#egg=tabula_py
 transitions==0.7.2
 treelib==1.6.1
+fire==0.2.1

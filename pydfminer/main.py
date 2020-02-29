@@ -2,6 +2,7 @@ from pprint import pprint
 import json
 import pdb
 import traceback
+import re
 
 from treelib import Node, Tree
 from transitions import Machine, State
@@ -60,8 +61,18 @@ class Becu(PdfDocument):
         for from_, to_ in zip(linear_transitions, linear_transitions[1:]):
             self.machine.add_transition(from_.tag, from_, to_)
 
-        summary = Section(tag="deposit account summary")
+        last = contents[-1]
+
+        summary = OptionalSection(
+            "Summary of Deposit",
+            tag="deposit account summary"
+            )
         self.add_node(summary, parent=self.bank)
+
+        self.machine.add_transition(last.tag, last, summary,
+                                    conditions=[last.done,
+                                                summary.ready])
+        
         self.add_node(BlockHeader(), parent=summary)
         self.add_node(AccountsSummary(), parent=summary)
 
@@ -69,7 +80,10 @@ class Becu(PdfDocument):
         self.add_node(FeesSummary(), parent=summary)
 
 
-        summary = OptionalSection(tag="loan account summary")
+        summary = OptionalSection(
+            "Summary of Loan",
+            tag="loan account summary"
+            )
         self.add_node(summary, parent=self.bank)
         self.add_node(BlockHeader(), parent=summary)
         self.add_node(AccountsSummary(), parent=summary)
@@ -110,12 +124,25 @@ class Bank(NodeState):
 
 class Section(NodeState):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)        
+        super().__init__(*args, **kwargs)
 
+    def ready(text):
+        return True
+
+    def done():
+        return False
 
 class OptionalSection(Section):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, section_regex, **kwargs):
         super().__init__(*args, **kwargs)
+        self.pattern = re.compile(section_regex)
+
+    def ready(text):
+        search = self.pattern.search(text)
+        return search != None
+
+    def done():
+        return False    
 
 class Address(Section):
     def __init__(self, *args, **kwargs):

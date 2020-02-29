@@ -4,7 +4,7 @@ import pdb
 import traceback
 
 from treelib import Node, Tree
-from transitions import Machine
+from transitions import Machine, State
 import fire
 import tabula
 
@@ -40,19 +40,80 @@ class PdfDocument(Document):
             'col': 0
             }
 
+class Becu(PdfDocument):
+    def __init__(self, document):
+        super().__init__(document)
+        self.machine = Machine()
+        self.bank = Bank(tag="BECU", data=document)
+        self.add_node(self.bank)
+
+        section = Section(tag="initial")
+        self.add_node(section, parent=self.bank)
+        
+        contents = [Address(), StatementPeriod()]
+        for item in contents:
+            self.add_node(item, parent=section)
+        self.machine.initial = section
+
+        linear_transitions = [section, *contents]
+
+        for from_, to_ in zip(linear_transitions, linear_transitions[1:]):
+            self.machine.add_transition(from_.tag, from_, to_)
+
+        summary = Section(tag="deposit account summary")
+        self.add_node(summary, parent=self.bank)
+        self.add_node(BlockHeader(), parent=summary)
+        self.add_node(AccountsSummary(), parent=summary)
+
+        self.add_node(BlockHeader(), parent=summary)
+        self.add_node(FeesSummary(), parent=summary)
 
 
-class Bank(Node):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        summary = OptionalSection(tag="loan account summary")
+        self.add_node(summary, parent=self.bank)
+        self.add_node(BlockHeader(), parent=summary)
+        self.add_node(AccountsSummary(), parent=summary)
 
-class Section(Node):
+
+        detail = OptionalSection(tag="deposit account detail")
+        self.add_node(detail, parent=self.bank)
+
+        account = AccountDetailHeader()
+        self.add_node(account, parent=detail)
+        self.add_node(AccountDetailYield(), parent=account)
+
+        # OptionalPageHeader
+        # PageFooter
+
+    def add_node(self, node, parent=None):
+        super().add_node(node, parent=parent)
+        self.machine.add_state(node)
+
+
+class NodeState(State, Node):
     def __init__(self, *args, **kwargs):
         if 'tag' not in kwargs:
             kwargs['tag'] = self.__class__.__name__
+        name = kwargs.get('name', kwargs['tag'])
+        Node.__init__(self, *args, **kwargs)
+        State.__init__(
+            self,
+            name,
+            on_enter=kwargs.get('on_enter'),
+            on_exit=kwargs.get('on_exit'),
+            ignore_invalid_triggers=kwargs.get('ignore_invalid_triggers')
+            )        
+
+class Bank(NodeState):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-class OptionalSection(Node):
+class Section(NodeState):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)        
+
+
+class OptionalSection(Section):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -82,22 +143,6 @@ class AccountDetailYield(Section):
     pass
 
 
-# BECU = {
-#     "Summary of Deposit Account Activity": {
-#         { 'headers': {
-#             'lines': 2 },
-#          'accounts': {
-#              'lines': -1 },
-
-#             }
-#                                             },
-#     "Deposit Account Activity": {
-#         },
-#     "Deposit Account Activity (continued)":{
-#         },
-
-# }
-
 
 def is_becu(pages):
     for page in pages:
@@ -117,39 +162,9 @@ def process(pdf='/Volumes/2019 Google Drive/Google Drive/foolscap/archive/Financ
     pdf_json = tabula.read_pdf(pdf, pages='all', output_format='json', multiple_tables=True, relative_area=True, area=[0,0,100,100], lattice=False, stream=True)
     #print(json.dumps(pdf_json, indent=2))
 
-    doc = PdfDocument(pdf_json)
-    becu = Bank(tag="BECU", data=doc)
-    doc.add_node(becu)
-
-    initial = Section(tag="initial")
-    doc.add_node(initial, parent=becu)
-    doc.add_node(Address(), parent=initial)
-    doc.add_node(StatementPeriod(), parent=initial)
-
-
-    summary = OptionalSection(tag="deposit account summary")
-    doc.add_node(summary, parent=becu)
-    doc.add_node(BlockHeader(), parent=summary)
-    doc.add_node(AccountsSummary(), parent=summary)
-
-    doc.add_node(BlockHeader(), parent=summary)
-    doc.add_node(FeesSummary(), parent=summary)
-
-
-    summary = OptionalSection(tag="loan account summary")
-    doc.add_node(summary, parent=becu)
-    doc.add_node(BlockHeader(), parent=summary)
-    doc.add_node(AccountsSummary(), parent=summary)
-
-
-    detail = OptionalSection(tag="deposit account detail")
-    doc.add_node(detail, parent=becu)
-
-    account = AccountDetailHeader()
-    doc.add_node(account, parent=detail)
-    doc.add_node(AccountDetailYield(), parent=account)
-
+    doc = Becu(pdf_json)
     doc.show(line_type="ascii-em", reverse=False, idhidden=False, key=False)
+    doc.machine.initial
 
 
 

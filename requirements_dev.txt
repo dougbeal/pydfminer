@@ -6,4 +6,5 @@ python-dateutil==2.8.1
 pytz==2019.3
 six==1.14.0
 -e git+https://github.com/dougbeal/tabula-py.git@e11d6f0ac518810b6d92b60a815e34f32f6bf085#egg=tabula_py
-anytree==2.8.0
+transitions==0.7.2
+treelib==1.6.1

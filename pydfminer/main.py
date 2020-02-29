@@ -3,8 +3,8 @@ import json
 import pdb
 import traceback
 
-from anytree import Node, RenderTree
-from statemachine import StateMachine, State
+from treelib import Node, Tree
+from transitions import Machine
 import fire
 import tabula
 
@@ -25,42 +25,61 @@ import tabula
 ### paypal
 
 
-class Institution(StateMachine):
-    def __init__(self, document_structure_tree):
-        self.document = document_structure_tree
-        self.states = [
-                       State('pre', initial=True),
-                       State('post')
-                       ]
-
-class InstitutionWithSimpleHeaders(Institution):
-    def __init__(self, headers, doc):
-        super().__init__(doc)
-
-class BECU(InstitutionWithSimpleHeaders):
-    def __init__(self, headers, doc):
-        super().__init__(doc)
+class Document(Tree):
+    def __init__(self, document):
+        super().__init__()
+        self.document = document
 
 
-class Document(Node):
+class PdfDocument(Document):
+    def __init__(self, document):
+        super().__init__(document)
+        self.location = {
+            'page': 0,
+            'row': 0,
+            'col': 0
+            }
+
+
+
+class Bank(Node):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        
+
 class Section(Node):
+    def __init__(self, *args, **kwargs):
+        if 'tag' not in kwargs:
+            kwargs['tag'] = self.__class__.__name__
+        super().__init__(*args, **kwargs)
+
+class OptionalSection(Node):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class Address(Section):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class StatementPeriod(Section):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class BlockHeader(Section):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class AccountsSummary(Section):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class FeesSummary(Section):
     pass
 
-class NamedSection(Node):
+class AccountDetailHeader(Section):
     pass
 
-class BECUPre(Section):
+class AccountDetailYield(Section):
     pass
-    # Statement Period:
-    # address?
-
-class BECUSummary(Section):
-    def __init__(self, label):
-        super().__init__()
-        self.label = label
 
 
 # BECU = {
@@ -94,31 +113,43 @@ def is_becu_section(text):
             return section_keyword.split(' ')[0]
     return False
 
-def regions(pdf='/Volumes/2019 Google Drive/Google Drive/foolscap/archive/Financial Accounts/BECU/2020/becu  2020-01-01 2020-01-31 littlecatz Estatement.pdf'):
+def process(pdf='/Volumes/2019 Google Drive/Google Drive/foolscap/archive/Financial Accounts/BECU/2020/becu  2020-01-01 2020-01-31 littlecatz Estatement.pdf'):
     pdf_json = tabula.read_pdf(pdf, pages='all', output_format='json', multiple_tables=True, relative_area=True, area=[0,0,100,100], lattice=False, stream=True)
     #print(json.dumps(pdf_json, indent=2))
 
-    sections = []
-    section = { 'type': 'pre'}
-    if is_becu(pdf_json):
-        for page in pdf_json:
-            for row in page['data']:
-                for col in row:
-                    section_type = is_becu_section(col['text'])
-                    if section_type:
-                        if section:
-                            sections.append(section)
-                        section = {}
-                        section['type'] = col['text']
-                        section['geom'] = col
-                    else:
-                        if section:
-                            section.setdefault('text', []).append(col)
+    doc = PdfDocument(pdf_json)
+    becu = Bank(tag="BECU", data=doc)
+    doc.add_node(becu)
 
-    if section:
-        sections.append(section)
-    pprint(sections)
+    initial = Section(tag="initial")
+    doc.add_node(initial, parent=becu)
+    doc.add_node(Address(), parent=initial)
+    doc.add_node(StatementPeriod(), parent=initial)
 
+
+    summary = OptionalSection(tag="deposit account summary")
+    doc.add_node(summary, parent=becu)
+    doc.add_node(BlockHeader(), parent=summary)
+    doc.add_node(AccountsSummary(), parent=summary)
+
+    doc.add_node(BlockHeader(), parent=summary)
+    doc.add_node(FeesSummary(), parent=summary)
+
+
+    summary = OptionalSection(tag="loan account summary")
+    doc.add_node(summary, parent=becu)
+    doc.add_node(BlockHeader(), parent=summary)
+    doc.add_node(AccountsSummary(), parent=summary)
+
+
+    detail = OptionalSection(tag="deposit account detail")
+    doc.add_node(detail, parent=becu)
+
+    account = AccountDetailHeader()
+    doc.add_node(account, parent=detail)
+    doc.add_node(AccountDetailYield(), parent=account)
+
+    doc.show(line_type="ascii-em", reverse=False, idhidden=False, key=False)
 
 
 

@@ -179,26 +179,26 @@ class Becu(PdfDocument):
 
         node = self.add_node(BlockHeader(tag="BlockHeader/Acc", lines=2, data=self),
                              parent=summary)
-        self.machine.add_transition(summary.tag, summary, node)        
-        
+        self.machine.add_transition(summary.tag, summary, node)
+
         last = self.add_node(
             AccountsSummaryLine(
                 section_regex="checking|savings",
                 data=self),
             parent=summary)
-        self.machine.add_transition(node.tag, node, last)                        
+        self.machine.add_transition(node.tag, node, last)
         self.machine.add_transition("self_" + last.tag, last, last,
                                     conditions=[last.ready])
-        
+
         if fee_section:
             node = self.add_node(BlockHeader(tag="BlockHeader/Fee", lines=1, data=self), parent=summary)
-            self.machine.add_transition(last.tag, last, node)            
+            self.machine.add_transition(last.tag, last, node)
             last = self.add_node(
                 FeesSummary(
                     section_regex="fees",
                     data=self),
                 parent=summary)
-            self.machine.add_transition(node.tag, node, last)                        
+            self.machine.add_transition(node.tag, node, last)
         return last
 
     def section_detail(self, incomming, regex, tag):
@@ -284,15 +284,15 @@ class RegexMatchingSection(Section):
             search = self.regex.search(col['text'])
             if search:
                 break
-        log.debug(f"{self.__class__.__name__}[{self.name}] ready:{search} {self.regex.pattern}")    
+        log.debug(f"{self.__class__.__name__}[{self.name}] ready:{search} {self.regex.pattern}")
         return search != None
 
 class OptionalSection(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)    
+        super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())    
+        print(self.data.consume_row())
 
 class Address(Section):
     def __init__(self, *args, **kwargs):
@@ -313,14 +313,14 @@ class Address(Section):
 class StatementPeriod(Section):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._done = False        
- 
+        self._done = False
+
     def on_enter_state(self, event_data):
         print(self.data.consume_row())
         self._done = True
 
     def done(self):
-        return self._done        
+        return self._done
 
 class BlockHeader(Section):
     def __init__(self, *args, lines=1, **kwargs):
@@ -335,16 +335,16 @@ class BlockHeader(Section):
 class AccountsSummaryLine(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-    
+
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())        
+        print(self.data.consume_row())
 
 class FeesSummary(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-    
+
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())   
+        print(self.data.consume_row())
 
 class AccountDetailHeader(Section):
     pass

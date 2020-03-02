@@ -64,18 +64,20 @@ class Document(Tree):
 
     def run(self):
         previous_state = None
-        # no self-transitions alowed
-        while self.state != 'terminus' and previous_state != self.state:
-            log.debug(f"run:state {self.state}")
 
-            previous_state = self.state
-            triggers = self.machine.get_triggers(self.state)
-            log.debug(f"run:triggers {triggers}")
-            for outgoing in triggers:
-                log.debug(f"    run:trigger {outgoing} in {self.state}")
-                value = self.trigger(outgoing)
-                log.debug(f"    run:trigger done {outgoing} in {self.state} r={value}")
-        log.debug(f"run:complete state {self.state} prev {previous_state}")
+        try:
+            while self.state != 'terminus' and previous_state != self.state:
+                triggers = self.machine.get_triggers(self.state)
+                log.debug(f"run:st {self.state} tr {triggers}")
+                for trigger in triggers:
+                    if self.trigger(trigger, self.row()):
+                        break
+                log.debug(f"run:st {self.state} tr {trigger} worked")
+            log.debug(f"run:complete state {self.state} prev {previous_state} row {self.row()}")
+        except IndexError:
+            log.debug(f"run:complete out of document, state {self.state} prev {previous_state}")
+
+
 
 class PdfDocument(Document):
     def __init__(self, document):
@@ -113,14 +115,14 @@ class Becu(PdfDocument):
         last = self.section_summary(
             [initial],
             regex="Summary of Deposit",
-            tag="summary deposit account"
+            tag="summary_deposit_account"
             )
         section_transitions.append(last)
 
         last = self.section_summary(
             section_transitions,
             regex="Summary of Loan",
-            tag="summary loan account",
+            tag="summary_loan_account",
             fee_section=False
             )
         section_transitions.append(last)
@@ -128,19 +130,21 @@ class Becu(PdfDocument):
         last = self.section_detail(
             section_transitions,
             regex="Deposit Account",
-            tag="deposit account"
+            tag="deposit_account"
             )
         section_transitions.append(last)
 
         last = self.section_detail(
             section_transitions,
             regex="Loan Account",
-            tag="loan account"
+            tag="loan_account"
             )
         section_transitions.append(last)
 
-        # todo: add page breaks
-        #   contues to sections
+        # todo: add page breaks [use nested states, so page break can return to
+        # same place in Section when resumed
+        #
+        # contues to sections
 
     def section_initial(self):
         section = Section(tag="initial", data=self)
@@ -164,18 +168,28 @@ class Becu(PdfDocument):
 
         return last
 
-    def page_bounary(self):
+    def page_boundary(self):
         pass
+
+    def add_incomming_transitions(self, incomming, target):
+        for last in incomming:
+            self.machine.add_transition(
+                last.tag, last, target,
+                conditions=[last.done,
+                            target.ready])
+
+    def add_outgoing_transitions(self, tag, from_, outgoing):
+        for target in outgoing:
+            self.machine.add_transition(
+                f"{tag}:{from_.tag}_TO_{target.tag}", from_, target,
+                conditions=[from_.done,
+                            target.ready])
 
     def section_summary(self, incomming, regex, tag, fee_section=True):
         summary = OptionalSection(section_regex=regex, tag=tag, data=self)
         self.add_node(summary, parent=self.bank)
 
-        for last in incomming:
-            self.machine.add_transition(
-                last.tag, last, summary,
-                conditions=[last.done,
-                            summary.ready])
+        self.add_incomming_transitions(incomming, summary)
 
         node = self.add_node(BlockHeader(tag="BlockHeader/Acc", lines=2, data=self),
                              parent=summary)
@@ -199,23 +213,51 @@ class Becu(PdfDocument):
                     data=self),
                 parent=summary)
             self.machine.add_transition(node.tag, node, last)
+            self.machine.add_transition("self_" + last.tag, last, last,
+                                        conditions=[last.ready])
         return last
 
     def section_detail(self, incomming, regex, tag):
         detail = OptionalSection(section_regex=regex, tag=tag, data=self)
         self.add_node(detail, parent=self.bank)
 
-        for last in incomming:
-            self.machine.add_transition(
-                last.tag, last, detail,
-                conditions=[last.done,
-                            detail.ready]
-                )
+        self.add_incomming_transitions(incomming, detail)
 
-        account = AccountDetailHeader(data=self)
-        self.add_node(account, parent=detail)
-        last = self.add_node(AccountDetailYield(data=self), parent=account)
-        return last
+        account = self.add_node(
+            AccountDetailHeader(
+                section_regex="checking|savings",
+                data=self),
+            parent=detail)
+        self.machine.add_transition(f"{tag}:{detail.tag}", detail, account)
+
+        yield_ = self.add_node(
+            AccountDetailYield(
+                data=self,
+                section_regex="yield"),
+            parent=account)
+        self.machine.add_transition(f"{tag}:{account.tag}", account, yield_)
+
+        header = self.add_node(
+            AccountActivityHeader(
+                section_regex="desposits|withdrawals|checks",
+                data=self),
+            parent=account)
+        self.machine.add_transition(f"{tag}:{yield_.tag}_TO_{header.tag}",
+                                    yield_, header)
+        # if there is no yield section
+        self.machine.add_transition(f"{tag}:{account.tag}_TO_{header.tag}",
+                                    account, header)
+
+        line = self.add_node(
+            AccountActivityLine(
+                section_regex="[0-9]{2}/[0-9]{2}",
+                data=self),
+            parent=header)
+        self.machine.add_transition(f"{tag}:{header.tag}", header, line)
+        self.machine.add_transition("self_" + line.tag, line, line)
+        self.add_outgoing_transitions(tag, line, [account, header])
+
+        return line
 
     def add_node(self, node, parent=None):
         super().add_node(node, parent=parent)
@@ -265,11 +307,11 @@ class Section(NodeState):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def ready(self):
+    def ready(self, row):
         log.debug(f"{self.__class__.__name__}[{self.name}] is ready")
         return True
 
-    def done(self):
+    def done(self, event_data):
         log.debug(f"{self.__class__.__name__}[{self.name}] is done")
         return True
 
@@ -278,9 +320,9 @@ class RegexMatchingSection(Section):
         super().__init__(*args, **kwargs)
         self.regex = re.compile(section_regex, flags=re.IGNORECASE)
 
-    def ready(self):
+    def ready(self, row):
         search = None
-        for col in self.data.row():
+        for col in row:
             search = self.regex.search(col['text'])
             if search:
                 break
@@ -298,29 +340,18 @@ class Address(Section):
     def __init__(self, *args, **kwargs):
         log.debug(f"{self.__class__.__name__} {args} {kwargs}")
         super().__init__(*args, **kwargs)
-        self._done = False
-
 
     def on_enter_state(self, event_data):
         print(self.data.consume_row())
         print(self.data.consume_row())
         print(self.data.consume_row())
-        self._done = True
-
-    def done(self):
-        return self._done
 
 class StatementPeriod(Section):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._done = False
 
     def on_enter_state(self, event_data):
         print(self.data.consume_row())
-        self._done = True
-
-    def done(self):
-        return self._done
 
 class BlockHeader(Section):
     def __init__(self, *args, lines=1, **kwargs):
@@ -346,11 +377,38 @@ class FeesSummary(RegexMatchingSection):
     def on_enter_state(self, event_data):
         print(self.data.consume_row())
 
-class AccountDetailHeader(Section):
-    pass
+class AccountDetailHeader(RegexMatchingSection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-class AccountDetailYield(Section):
-    pass
+    def on_enter_state(self, event_data):
+        print(self.data.consume_row())
+
+class AccountDetailYield(RegexMatchingSection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def on_enter_state(self, event_data):
+        print(self.data.consume_row())
+        print(self.data.consume_row())
+        print(self.data.consume_row())
+
+class AccountActivityHeader(RegexMatchingSection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def on_enter_state(self, event_data):
+        print(self.data.consume_row())
+        print(self.data.consume_row())
+
+class AccountActivityLine(RegexMatchingSection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def on_enter_state(self, event_data):
+        print(self.data.consume_row())
+
+
 
 
 def process(pdf='/Volumes/2019 Google Drive/Google Drive/foolscap/archive/Financial Accounts/BECU/2020/becu  2020-01-01 2020-01-31 littlecatz Estatement.pdf'):
@@ -360,7 +418,7 @@ def process(pdf='/Volumes/2019 Google Drive/Google Drive/foolscap/archive/Financ
     doc = Becu(pdf_json)
     log.debug(doc.machine.states.keys())
     log.debug(doc.machine.get_transitions())
-    #doc.show(line_type="ascii-em", reverse=False, idhidden=False, key=False)
+    doc.show(line_type="ascii-em", reverse=False, idhidden=False, key=False)
     doc.run()
     #pprint(doc.state)
     #doc.show(line_type="ascii-em", reverse=False, idhidden=False, key=False)

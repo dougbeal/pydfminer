@@ -1,23 +1,29 @@
 from pprint import pprint
 import json
-import pdb
-import traceback
-import re
 import logging
+import pdb
+import re
+import traceback
 
 from treelib import Node, Tree
-from transitions import Machine, State
+from transitions import Machine
+#from transitions import HierarchicalMachine as Machine
+from transitions import State
+#from transitions import NestedState
 from transitions.extensions.states import add_state_features, Volatile
 
 import fire
 import tabula
 
-logging.basicConfig(level=logging.DEBUG)
+#NestedState.separator = '↦'
+
+logging.basicConfig(level=logging.INFO)
 # Set transitions' log level to INFO; DEBUG messages will be omitted
-logging.getLogger('transitions').setLevel(logging.DEBUG)
+logging.getLogger('transitions').setLevel(logging.INFO)
 
 log = logging.getLogger(__name__)
-log.setLevel(level='DEBUG')
+#log.setLevel(level=logging.INFO)
+log.setLevel(level=logging.DEBUG)
 
 # institution classifier
 ## bank
@@ -52,6 +58,8 @@ class Document(Tree):
         self.document = document
         self.machine = CustomStateMachine(auto_transitions=False)
         self.machine.add_model(self)
+        # used for returning to previous state when page ends
+        self.previous_state = None
 
     def page(self):
         pass
@@ -63,19 +71,22 @@ class Document(Tree):
         pass
 
     def run(self):
-        previous_state = None
-
         try:
-            while self.state != 'terminus' and previous_state != self.state:
+            # stop if there is no where to go
+            triggers = True
+            successful_trigger = True
+            while self.state != 'terminus' and triggers and successful_trigger:
+                self.previous_state = self.state
                 triggers = self.machine.get_triggers(self.state)
                 log.debug(f"run:st {self.state} tr {triggers}")
                 for trigger in triggers:
-                    if self.trigger(trigger, self.row()):
+                    successful_trigger = self.trigger(trigger, self.row())
+                    if successful_trigger:
                         break
                 log.debug(f"run:st {self.state} tr {trigger} worked")
-            log.debug(f"run:complete state {self.state} prev {previous_state} row {self.row()}")
+            log.debug(f"run:complete state {self.state} prev {self.previous_state} row {self.row()} suc {successful_trigger}")
         except IndexError:
-            log.debug(f"run:complete out of document, state {self.state} prev {previous_state}")
+            log.debug(f"run:complete out of document, state {self.state} prev {self.previous_state}")
 
 
 
@@ -102,6 +113,12 @@ class PdfDocument(Document):
         self.location['row'] = self.location['row'] + 1
         return r
 
+    def consume_page(self):
+        self.location['col'] = 0
+        self.location['row'] = 0
+        self.location['page'] = self.location['page'] + 1
+
+
 
 class Becu(PdfDocument):
     def __init__(self, document):
@@ -109,6 +126,11 @@ class Becu(PdfDocument):
 
         self.bank = Bank(tag="BECU", data=self)
         self.add_node(self.bank)
+
+        self.page_boundary = PageBoundary(
+            section_regex="page [0-9]+ of [0-9]+",
+            data=self)
+        self.machine.add_state(self.page_boundary)
 
         initial = self.section_initial()
         section_transitions = []
@@ -141,10 +163,10 @@ class Becu(PdfDocument):
             )
         section_transitions.append(last)
 
-        # todo: add page breaks [use nested states, so page break can return to
-        # same place in Section when resumed
-        #
-        # contues to sections
+        self.add_outgoing_transitions(
+            'pagebreak',
+            self.page_boundary,
+            section_transitions)
 
     def section_initial(self):
         section = Section(tag="initial", data=self)
@@ -247,6 +269,7 @@ class Becu(PdfDocument):
         # if there is no yield section
         self.machine.add_transition(f"{tag}:{account.tag}_TO_{header.tag}",
                                     account, header)
+        # continued
 
         line = self.add_node(
             AccountActivityLine(
@@ -257,11 +280,18 @@ class Becu(PdfDocument):
         self.machine.add_transition("self_" + line.tag, line, line)
         self.add_outgoing_transitions(tag, line, [account, header])
 
-        return line
+        return detail
 
     def add_node(self, node, parent=None):
         super().add_node(node, parent=parent)
         self.machine.add_state(node)
+        if hasattr(node, 'ready'):
+            self.machine.add_transition(
+                "from_" + node.tag + "_to_pagebreak",
+                node,
+                self.page_boundary,
+                conditions=[node.done,
+                            self.page_boundary.ready])
         return node
 
 
@@ -284,14 +314,24 @@ class NodeState(State, Node):
         """ Call on_enter method on state object """
         log.debug("%s.enter '%s' callback.", self.__class__.__name__, self.tag)
         if hasattr(self, 'on_enter_state') and callable(self.on_enter_state):
-            self.on_enter_state(event_data)
+            try:
+                self.on_enter_state(event_data)
+            except:
+                traceback.print_exc()
+                pdb.post_mortem()
+                raise
         State.enter(self, event_data)
 
     def exit(self, event_data):
         """ Call on_exit method on state object """
         log.debug("%s.exit '%s' callback.", self.__class__.__name__, self.tag)
         if hasattr(self, 'on_exit_state') and callable(self.on_exit_state):
-            self.on_exit_state(event_data)
+            try:
+                self.on_exit_state(event_data)
+            except:
+                traceback.print_exc()
+                pdb.post_mortem()
+                raise
         State.exit(self, event_data)
 
 class TerminalState(NodeState):
@@ -315,6 +355,10 @@ class Section(NodeState):
         log.debug(f"{self.__class__.__name__}[{self.name}] is done")
         return True
 
+    def log_row(row):
+        log.debug((["{:06.2f} {:06.2f}".format(col['left'], col['width']) for col in row]))
+        log.debug((["{: >13.13}".format(col['text']) for col in row]))
+
 class RegexMatchingSection(Section):
     def __init__(self, *args, section_regex, **kwargs):
         super().__init__(*args, **kwargs)
@@ -334,79 +378,163 @@ class OptionalSection(RegexMatchingSection):
         super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())
+        print(self.data.consume_row()[0]['text'])
 
 class Address(Section):
     def __init__(self, *args, **kwargs):
         log.debug(f"{self.__class__.__name__} {args} {kwargs}")
         super().__init__(*args, **kwargs)
+        self.orgnization = ""
+        self.address = []
 
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())
-        print(self.data.consume_row())
-        print(self.data.consume_row())
+        row = self.data.consume_row()
+        self.orgnization = row[0]['text']
+        self.num_after_org = ' '.join([col['text']
+                                       for col in row[1:]
+                                       if col['text']])
+
+        row = self.data.consume_row()
+        self.address.append(' '.join([col['text']
+                                    for col in row
+                                    if col['text']]))
+        row = self.data.consume_row()
+        self.address.append(' '.join([col['text']
+                                      for col in row
+                                      if col['text']]))
+        print(f"org {self.orgnization} adr {self.address}")
 
 class StatementPeriod(Section):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())
+        row = self.data.consume_row()
+        dates = row[0]['text'].split(':')[1]
+        start_date_string, stop_date_string = dates.split('-')
+        self.start_date = start_date_string
+        self.stop_date = stop_date_string
+        print(f"dates {self.start_date} {self.stop_date}")
 
 class BlockHeader(Section):
     def __init__(self, *args, lines=1, **kwargs):
         self.lines = lines
         super().__init__(*args, **kwargs)
+        self.headers = []
 
     def on_enter_state(self, event_data):
-        for _ in range(self.lines):
-            print(self.data.consume_row())
+        headers = [self.data.consume_row() for _ in range(self.lines)]
+        for header in headers:
+            Section.log_row(header)
 
+        if len(headers) > 1:
+            top = [col['text'] for col in headers[0]]
+            bot = [col['text'] for col in headers[1]]
+            self.headers.append(bot[0])
+
+            split_top = top[1].split(' ')
+            split_bot = bot[1].split(' ')
+
+            self.headers.append(' '.join([split_top[0], split_bot[0]]))
+            self.headers.append(' '.join([split_top[1], split_bot[1]]))
+            self.headers.append(bot[2])
+            self.headers.append(' '.join([top[4], bot[4]]))
+            self.headers.append(' '.join([top[5], bot[5]]))
+
+
+
+        print(self.headers)
 
 class AccountsSummaryLine(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.lines = []
 
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())
+        row = self.data.consume_row()
+        Section.log_row(row)
+        row = [r['text'] for r in row]
+        line = []
+        line.append(row[0])
+        for r in row[1:]:
+            if ' ' in r:
+                line.extend(r.split(' '))
+            else:
+                line.append(r)
+        print(line)
 
 class FeesSummary(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())
+        row = self.data.consume_row()
+        Section.log_row(row)
 
 class AccountDetailHeader(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())
+        row = self.data.consume_row()
+        Section.log_row(row)
+        self.withdrawlOrDeposit = row[0]['text']
+        print(self.withdrawlOrDeposit)
 
 class AccountDetailYield(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())
-        print(self.data.consume_row())
-        print(self.data.consume_row())
+        row = self.data.consume_row()
+        Section.log_row(row)
+        row = self.data.consume_row()
+        Section.log_row(row)
+        row = self.data.consume_row()
+        Section.log_row(row)
 
 class AccountActivityHeader(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())
-        print(self.data.consume_row())
+        row = self.data.consume_row()
+        Section.log_row(row)
+        self.withdrawlOrDeposit = row[0]['text']
+        row = self.data.consume_row()
+        Section.log_row(row)
+        self.headers = row[0]['text'].split(' ')
+        self.headers = [*self.headers[0:2], ' '.join(self.headers[2:])]
+        print(self.withdrawlOrDeposit)
+        print(self.headers)
 
 class AccountActivityLine(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.lines = []
 
     def on_enter_state(self, event_data):
-        print(self.data.consume_row())
+        row = self.data.consume_row()
+        Section.log_row(row)
+        row = [r['text'] for r in row if r['text']]
+        line = row[0].split(' ')
+        line.extend(row[1:])
+        line = [*line[0:2], ' '.join(line[2:])]
+        print(line)
+        self.lines.append(line)
+
+class PageBoundary(RegexMatchingSection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def on_enter_state(self, event_data):
+        row = self.data.consume_row()
+        Section.log_row(row)
+        self.data.consume_page()
+        row = self.data.consume_row()
+        Section.log_row(row)
+        row = self.data.consume_row()
+        Section.log_row(row)
 
 
 

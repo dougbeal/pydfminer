@@ -61,6 +61,9 @@ class Document(Tree):
         # used for returning to previous state when page ends
         self.previous_state = None
 
+    def last_page(self):
+        pass
+
     def page(self):
         pass
 
@@ -98,6 +101,9 @@ class PdfDocument(Document):
             'row': 0,
             'col': 0
             }
+
+    def last_page(self):
+        return (self.location['page']+1) >= len(self.document)
 
     def page(self):
         return self.document[self.location['page']]['data']
@@ -531,10 +537,11 @@ class PageBoundary(RegexMatchingSection):
         row = self.data.consume_row()
         Section.log_row(row)
         self.data.consume_page()
-        row = self.data.consume_row()
-        Section.log_row(row)
-        row = self.data.consume_row()
-        Section.log_row(row)
+        if not self.data.last_page():
+            row = self.data.consume_row()
+            Section.log_row(row)
+            row = self.data.consume_row()
+            Section.log_row(row)
 
 
 

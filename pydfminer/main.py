@@ -17,9 +17,9 @@ import tabula
 
 #NestedState.separator = '↦'
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 # Set transitions' log level to INFO; DEBUG messages will be omitted
-logging.getLogger('transitions').setLevel(logging.INFO)
+logging.getLogger('transitions').setLevel(logging.DEBUG)
 
 log = logging.getLogger(__name__)
 #log.setLevel(level=logging.INFO)
@@ -187,10 +187,7 @@ class Becu(PdfDocument):
         linear_transitions = [section, *contents]
 
         for from_, to_ in zip(linear_transitions, linear_transitions[1:]):
-            self.machine.add_transition("from_" + from_.tag, from_, to_,
-                                        conditions=[from_.done,
-                                                    to_.ready]
-                                        )
+            self.add_optional_transition("from_" + from_.tag, from_, to_)
 
         last = contents[-1]
 
@@ -201,17 +198,22 @@ class Becu(PdfDocument):
 
     def add_incomming_transitions(self, incomming, target):
         for last in incomming:
-            self.machine.add_transition(
-                last.tag, last, target,
-                conditions=[last.done,
-                            target.ready])
+            self.add_optional_transition(last.tag, last, target)
+
 
     def add_outgoing_transitions(self, tag, from_, outgoing):
         for target in outgoing:
-            self.machine.add_transition(
-                f"{tag}:{from_.tag}_TO_{target.tag}", from_, target,
-                conditions=[from_.done,
-                            target.ready])
+            self.add_optional_transition(
+                f"{tag}:{from_.tag}_TO_{target.tag}",
+                from_,
+                target)
+
+    def add_optional_transition(self, name, from_, to_):
+        self.machine.add_transition(
+            name, from_, to_,
+            conditions=[from_.done,
+                        to_.ready,
+                        ])
 
     def section_summary(self, incomming, regex, tag, fee_section=True):
         summary = OptionalSection(section_regex=regex, tag=tag, data=self)
@@ -219,18 +221,17 @@ class Becu(PdfDocument):
 
         self.add_incomming_transitions(incomming, summary)
 
-        node = self.add_node(BlockHeader(tag="BlockHeader/Acc", lines=2, data=self),
+        block_header = self.add_node(BlockHeader(tag="BlockHeader/Acc", lines=2, data=self),
                              parent=summary)
-        self.machine.add_transition(summary.tag, summary, node)
+        self.machine.add_transition(summary.tag, summary, block_header)
 
         last = self.add_node(
             AccountsSummaryLine(
                 section_regex="checking|savings",
                 data=self),
             parent=summary)
-        self.machine.add_transition(node.tag, node, last)
-        self.machine.add_transition("self_" + last.tag, last, last,
-                                    conditions=[last.ready])
+        self.machine.add_transition(block_header.tag, block_header, last)
+        self.add_optional_transition("self_" + last.tag, last, last)
 
         if fee_section:
             node = self.add_node(BlockHeader(tag="BlockHeader/Fee", lines=1, data=self), parent=summary)
@@ -241,8 +242,8 @@ class Becu(PdfDocument):
                     data=self),
                 parent=summary)
             self.machine.add_transition(node.tag, node, last)
-            self.machine.add_transition("self_" + last.tag, last, last,
-                                        conditions=[last.ready])
+            self.add_optional_transition("self_" + last.tag, last, last)
+
         return last
 
     def section_detail(self, incomming, regex, tag):
@@ -251,25 +252,32 @@ class Becu(PdfDocument):
 
         self.add_incomming_transitions(incomming, detail)
 
+        # not duplicated on page break
         account = self.add_node(
             AccountDetailHeader(
                 section_regex="checking|savings",
                 data=self),
             parent=detail)
-        self.machine.add_transition(f"{tag}:{detail.tag}", detail, account)
+        self.add_optional_transition(f"{tag}:{detail.tag}", detail, account)
 
+        # not duplicated on page break
         yield_ = self.add_node(
             AccountDetailYield(
                 data=self,
                 section_regex="yield"),
             parent=account)
-        self.machine.add_transition(f"{tag}:{account.tag}", account, yield_)
+        self.add_optional_transition(f"{tag}:{account.tag}", account, yield_)
 
+        # duplicated on page break
         header = self.add_node(
             AccountActivityHeader(
                 section_regex="desposits|withdrawals|checks",
                 data=self),
             parent=account)
+
+        self.add_optional_transition(f"pagebreak:{tag}:{detail.tag}_TO_{header.tag}",
+                                    detail, header)
+
         self.machine.add_transition(f"{tag}:{yield_.tag}_TO_{header.tag}",
                                     yield_, header)
         # if there is no yield section
@@ -282,8 +290,8 @@ class Becu(PdfDocument):
                 section_regex="[0-9]{2}/[0-9]{2}",
                 data=self),
             parent=header)
-        self.machine.add_transition(f"{tag}:{header.tag}", header, line)
-        self.machine.add_transition("self_" + line.tag, line, line)
+        self.add_optional_transition(f"{tag}:{header.tag}", header, line)
+        self.add_optional_transition("self_" + line.tag, line, line)
         self.add_outgoing_transitions(tag, line, [account, header])
 
         return detail
@@ -376,7 +384,7 @@ class RegexMatchingSection(Section):
             search = self.regex.search(col['text'])
             if search:
                 break
-        log.debug(f"{self.__class__.__name__}[{self.name}] ready:{search} {self.regex.pattern}")
+        log.debug(f"{self.__class__.__name__}[{self.name}]\t\tready:{search} {self.regex.pattern}")
         return search != None
 
 class OptionalSection(RegexMatchingSection):
@@ -526,8 +534,18 @@ class AccountActivityLine(RegexMatchingSection):
         line = row[0].split(' ')
         line.extend(row[1:])
         line = [*line[0:2], ' '.join(line[2:])]
+
+        row = self.data.row()
+        print(row)
+        if "Machine" in row[0]['text']:
+            self.data.consume_row()
+            line.extend([r['text'] for r in row if r['text']])
+            log.debug("continued on next line")
         print(line)
         self.lines.append(line)
+
+
+
 
 class PageBoundary(RegexMatchingSection):
     def __init__(self, *args, **kwargs):

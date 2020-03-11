@@ -1,29 +1,21 @@
 from pprint import pprint
+import datetime
 import json
 import logging
 import pdb
 import re
 import traceback
 
-from treelib import Node, Tree
 from transitions import Machine
-#from transitions import HierarchicalMachine as Machine
 from transitions import State
-#from transitions import NestedState
 from transitions.extensions.states import add_state_features, Volatile
-
+from treelib import Node, Tree
+import dateutil
 import fire
 import tabula
 
 #NestedState.separator = '↦'
 
-logging.basicConfig(level=logging.DEBUG)
-# Set transitions' log level to INFO; DEBUG messages will be omitted
-logging.getLogger('transitions').setLevel(logging.DEBUG)
-
-log = logging.getLogger(__name__)
-#log.setLevel(level=logging.INFO)
-log.setLevel(level=logging.DEBUG)
 
 # institution classifier
 ## bank
@@ -130,12 +122,12 @@ class Becu(PdfDocument):
     def __init__(self, document):
         super().__init__(document)
 
-        self.bank = Bank(tag="BECU", data=self)
+        self.bank = Bank(tag="BECU", document=self)
         self.add_node(self.bank)
 
         self.page_boundary = PageBoundary(
             section_regex="page [0-9]+ of [0-9]+",
-            data=self)
+            document=self)
         self.machine.add_state(self.page_boundary)
 
         initial = self.section_initial()
@@ -175,10 +167,10 @@ class Becu(PdfDocument):
             section_transitions)
 
     def section_initial(self):
-        section = Section(tag="initial", data=self)
+        section = Section(tag="initial", document=self)
         self.add_node(section, parent=self.bank)
 
-        contents = [Address(data=self), StatementPeriod(data=self)]
+        contents = [Address(document=self), StatementPeriod(document=self)]
         for item in contents:
             self.add_node(item, parent=section)
 
@@ -216,30 +208,30 @@ class Becu(PdfDocument):
                         ])
 
     def section_summary(self, incomming, regex, tag, fee_section=True):
-        summary = OptionalSection(section_regex=regex, tag=tag, data=self)
+        summary = OptionalSection(section_regex=regex, tag=tag, document=self)
         self.add_node(summary, parent=self.bank)
 
         self.add_incomming_transitions(incomming, summary)
 
-        block_header = self.add_node(BlockHeader(tag="BlockHeader/Acc", lines=2, data=self),
+        block_header = self.add_node(BlockHeader(tag="BlockHeader/Acc", lines=2, document=self),
                              parent=summary)
         self.machine.add_transition(summary.tag, summary, block_header)
 
         last = self.add_node(
             AccountsSummaryLine(
                 section_regex="checking|savings",
-                data=self),
+                document=self),
             parent=summary)
         self.machine.add_transition(block_header.tag, block_header, last)
         self.add_optional_transition("self_" + last.tag, last, last)
 
         if fee_section:
-            node = self.add_node(BlockHeader(tag="BlockHeader/Fee", lines=1, data=self), parent=summary)
+            node = self.add_node(BlockHeader(tag="BlockHeader/Fee", lines=1, document=self), parent=summary)
             self.machine.add_transition(last.tag, last, node)
             last = self.add_node(
                 FeesSummary(
                     section_regex="fees",
-                    data=self),
+                    document=self),
                 parent=summary)
             self.machine.add_transition(node.tag, node, last)
             self.add_optional_transition("self_" + last.tag, last, last)
@@ -247,7 +239,7 @@ class Becu(PdfDocument):
         return last
 
     def section_detail(self, incomming, regex, tag):
-        detail = OptionalSection(section_regex=regex, tag=tag, data=self)
+        detail = OptionalSection(section_regex=regex, tag=tag, document=self)
         self.add_node(detail, parent=self.bank)
 
         self.add_incomming_transitions(incomming, detail)
@@ -256,14 +248,14 @@ class Becu(PdfDocument):
         account = self.add_node(
             AccountDetailHeader(
                 section_regex="checking|savings",
-                data=self),
+                document=self),
             parent=detail)
         self.add_optional_transition(f"{tag}:{detail.tag}", detail, account)
 
         # not duplicated on page break
         yield_ = self.add_node(
             AccountDetailYield(
-                data=self,
+                document=self,
                 section_regex="yield"),
             parent=account)
         self.add_optional_transition(f"{tag}:{account.tag}", account, yield_)
@@ -272,7 +264,7 @@ class Becu(PdfDocument):
         header = self.add_node(
             AccountActivityHeader(
                 section_regex="desposits|withdrawals|checks",
-                data=self),
+                document=self),
             parent=account)
 
         self.add_optional_transition(f"pagebreak:{tag}:{detail.tag}_TO_{header.tag}",
@@ -288,7 +280,7 @@ class Becu(PdfDocument):
         line = self.add_node(
             AccountActivityLine(
                 section_regex="[0-9]{2}/[0-9]{2}",
-                data=self),
+                document=self),
             parent=header)
         self.add_optional_transition(f"{tag}:{header.tag}", header, line)
         self.add_optional_transition("self_" + line.tag, line, line)
@@ -310,10 +302,11 @@ class Becu(PdfDocument):
 
 
 class NodeState(State, Node):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, document, **kwargs):
         if 'tag' not in kwargs:
             kwargs['tag'] = self.__class__.__name__
         name = kwargs.get('name', kwargs['tag'])
+        self.document = document
         # node consumes data
         Node.__init__(self, *args, **kwargs)
         State.__init__(
@@ -323,6 +316,7 @@ class NodeState(State, Node):
             on_exit=kwargs.get('on_exit'),
             ignore_invalid_triggers=kwargs.get('ignore_invalid_triggers')
             )
+        self.data = self
 
     def enter(self, event_data):
         """ Call on_enter method on state object """
@@ -347,6 +341,11 @@ class NodeState(State, Node):
                 pdb.post_mortem()
                 raise
         State.exit(self, event_data)
+
+    @property
+    def ledger_str(self):
+        return ""
+
 
 class TerminalState(NodeState):
     def __init__(self, *args, **kwargs):
@@ -392,7 +391,7 @@ class OptionalSection(RegexMatchingSection):
         super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        print(self.data.consume_row()[0]['text'])
+        print(self.document.consume_row()[0]['text'])
 
 class Address(Section):
     def __init__(self, *args, **kwargs):
@@ -402,17 +401,17 @@ class Address(Section):
         self.address = []
 
     def on_enter_state(self, event_data):
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         self.orgnization = row[0]['text']
         self.num_after_org = ' '.join([col['text']
                                        for col in row[1:]
                                        if col['text']])
 
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         self.address.append(' '.join([col['text']
                                     for col in row
                                     if col['text']]))
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         self.address.append(' '.join([col['text']
                                       for col in row
                                       if col['text']]))
@@ -423,7 +422,7 @@ class StatementPeriod(Section):
         super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         dates = row[0]['text'].split(':')[1]
         start_date_string, stop_date_string = dates.split('-')
         self.start_date = start_date_string
@@ -437,7 +436,7 @@ class BlockHeader(Section):
         self.headers = []
 
     def on_enter_state(self, event_data):
-        headers = [self.data.consume_row() for _ in range(self.lines)]
+        headers = [self.document.consume_row() for _ in range(self.lines)]
         for header in headers:
             Section.log_row(header)
 
@@ -465,7 +464,7 @@ class AccountsSummaryLine(RegexMatchingSection):
         self.lines = []
 
     def on_enter_state(self, event_data):
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         Section.log_row(row)
         row = [r['text'] for r in row]
         line = []
@@ -482,40 +481,43 @@ class FeesSummary(RegexMatchingSection):
         super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         Section.log_row(row)
 
 class AccountDetailHeader(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.account = ''
 
     def on_enter_state(self, event_data):
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         Section.log_row(row)
-        self.withdrawlOrDeposit = row[0]['text']
-        print(self.withdrawlOrDeposit)
+        self.account = row[0]['text']
+        print(self.account)
 
 class AccountDetailYield(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         Section.log_row(row)
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         Section.log_row(row)
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         Section.log_row(row)
 
 class AccountActivityHeader(RegexMatchingSection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.withdrawlOrDeposit = ''
+        self.headers = []
 
     def on_enter_state(self, event_data):
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         Section.log_row(row)
         self.withdrawlOrDeposit = row[0]['text']
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         Section.log_row(row)
         self.headers = row[0]['text'].split(' ')
         self.headers = [*self.headers[0:2], ' '.join(self.headers[2:])]
@@ -528,22 +530,48 @@ class AccountActivityLine(RegexMatchingSection):
         self.lines = []
 
     def on_enter_state(self, event_data):
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         Section.log_row(row)
         row = [r['text'] for r in row if r['text']]
         line = row[0].split(' ')
         line.extend(row[1:])
         line = [*line[0:2], ' '.join(line[2:])]
 
-        row = self.data.row()
-        print(row)
+        row = self.document.row()
         if "Machine" in row[0]['text']:
-            self.data.consume_row()
+            self.document.consume_row()
             line.extend([r['text'] for r in row if r['text']])
             log.debug("continued on next line")
         print(line)
         self.lines.append(line)
 
+    @property
+    def ledger_str(self):
+        parent = self.document.parent(self.identifier)
+        pparent = self.document.parent(parent.identifier)
+        ppparent = self.document.parent(pparent.identifier)
+        print(str(ppparent) + ' -> ' + str(pparent) + ' -> ' + 
+            str(parent)  + ' -> ' + str(self))
+
+        print(ppparent.tag)
+        print(pparent.account)
+        print(parent.headers)
+        print(parent.withdrawlOrDeposit)        
+        for line in self.lines:
+            self.ledger_line_str(line)
+
+    def currency_to_float(self, currency):
+        return float(re.sub(
+            '[(]', '-',
+            re.sub('[,)]', '', currency)))
+
+
+    def ledger_line_str(self, line):
+        date = dateutil.parser.parse(line[0]).strftime("%Y-%m-%d")
+        amount = self.currency_to_float(line[1])
+        description = ' '.join(line[2:])
+        print(f"{date}\t{description}\n"
+              f"\tSomething\t{amount}")
 
 
 
@@ -552,13 +580,13 @@ class PageBoundary(RegexMatchingSection):
         super().__init__(*args, **kwargs)
 
     def on_enter_state(self, event_data):
-        row = self.data.consume_row()
+        row = self.document.consume_row()
         Section.log_row(row)
-        self.data.consume_page()
-        if not self.data.last_page():
-            row = self.data.consume_row()
+        self.document.consume_page()
+        if not self.document.last_page():
+            row = self.document.consume_row()
             Section.log_row(row)
-            row = self.data.consume_row()
+            row = self.document.consume_row()
             Section.log_row(row)
 
 
@@ -573,11 +601,23 @@ def process(pdf='/Volumes/2019 Google Drive/Google Drive/foolscap/archive/Financ
     log.debug(doc.machine.get_transitions())
     doc.show(line_type="ascii-em", reverse=False, idhidden=False, key=False)
     doc.run()
+
+    doc.show(data_property="ledger_str", reverse=False, idhidden=False, key=False)
     #pprint(doc.state)
     #doc.show(line_type="ascii-em", reverse=False, idhidden=False, key=False)
 
 
 if __name__ == '__main__':
+    #level = logging.WARN
+    level = logging.DEBUG
+    logging.basicConfig(level=level)
+    # Set transitions' log level to INFO; DEBUG messages will be omitted
+    logging.getLogger('transitions').setLevel(level)
+
+    log = logging.getLogger(__name__)
+    #log.setLevel(level=logging.INFO)
+    log.setLevel(level=level)
+
     try:
         fire.Fire()
     except:

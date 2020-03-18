@@ -7,6 +7,7 @@ import re
 import traceback
 
 from transitions import Machine
+from transitions.extensions import GraphMachine
 from transitions import State
 from transitions.extensions.states import add_state_features, Volatile
 from treelib import Node, Tree
@@ -40,18 +41,25 @@ import tabula
 #     keyword: volatile (class, optional) -- every time the state is entered an object of type class will be assigned to the model. The attribute name is defined by hook. If omitted, an empty VolatileObject will be created instead
 #     keyword: hook (string, default='scope') -- The model's attribute name fore the temporal object.
 @add_state_features(Volatile)
-class CustomStateMachine(Machine):
-    pass
-
+class CustomStateMachine(GraphMachine):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 class Document(Tree):
-    def __init__(self, document):
-        super().__init__()
+    def __init__(self, document, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.document = document
-        self.machine = CustomStateMachine(auto_transitions=False)
-        self.machine.add_model(self)
+        self._machine = None
+        #self.machine.add_model(self)
         # used for returning to previous state when page ends
         self.previous_state = None
+
+    @property
+    def machine(self):
+        if self._machine is None:
+            self._initial = State(name='machine_initial')
+            self._machine = CustomStateMachine(model=self, initial=self._initial, auto_transitions=False, show_conditions=True, show_auto_transitions=True, show_state_attributes=True)
+        return self._machine
 
     def last_page(self):
         pass
@@ -66,19 +74,21 @@ class Document(Tree):
         pass
 
     def run(self):
+        assert self.machine.model == self
         try:
             # stop if there is no where to go
             triggers = True
             successful_trigger = True
-            while self.state != 'terminus' and triggers and successful_trigger:
+            while triggers and successful_trigger: # self.state != 'terminus' and
                 self.previous_state = self.state
                 triggers = self.machine.get_triggers(self.state)
                 log.debug(f"run:st {self.state} tr {triggers}")
                 for trigger in triggers:
                     successful_trigger = self.trigger(trigger, self.row())
                     if successful_trigger:
+                        log.debug(f"run:st {self.state} tr {trigger} worked")
                         break
-                log.debug(f"run:st {self.state} tr {trigger} worked")
+
             log.debug(f"run:complete state {self.state} prev {self.previous_state} row {self.row()} suc {successful_trigger}")
         except IndexError:
             log.debug(f"run:complete out of document, state {self.state} prev {self.previous_state}")
@@ -130,13 +140,16 @@ class Becu(PdfDocument):
             document=self)
         self.machine.add_state(self.page_boundary)
 
-        initial = self.section_initial()
+        initial = self.section_initial(self.bank)
         section_transitions = []
         last = self.section_summary(
             [initial],
             regex="Summary of Deposit",
             tag="summary_deposit_account"
             )
+        self.machine.add_transition(
+                "from_" + self.bank.name + "_to_" + initial.name,
+                self.bank, initial)
         section_transitions.append(last)
 
         last = self.section_summary(
@@ -166,15 +179,18 @@ class Becu(PdfDocument):
             self.page_boundary,
             section_transitions)
 
-    def section_initial(self):
+    def section_initial(self, node):
         section = Section(tag="initial", document=self)
         self.add_node(section, parent=self.bank)
+        self.machine.add_transition(
+                "from_" + self.bank.name + "_to_" + section.name,
+                node, section)
 
         contents = [Address(document=self), StatementPeriod(document=self)]
         for item in contents:
             self.add_node(item, parent=section)
 
-        self.machine.initial = section
+        #self.machine.initial = section
 
         linear_transitions = [section, *contents]
 
@@ -298,6 +314,10 @@ class Becu(PdfDocument):
                 self.page_boundary,
                 conditions=[node.done,
                             self.page_boundary.ready])
+        if not self.machine.get_transitions(source=self.machine.initial):
+            self.machine.add_transition(
+                "from_" + self.machine.initial + "_to_" + node.name,
+                self.machine.initial, node)
         return node
 
 
@@ -550,13 +570,13 @@ class AccountActivityLine(RegexMatchingSection):
         parent = self.document.parent(self.identifier)
         pparent = self.document.parent(parent.identifier)
         ppparent = self.document.parent(pparent.identifier)
-        print(str(ppparent) + ' -> ' + str(pparent) + ' -> ' + 
+        print(str(ppparent) + ' -> ' + str(pparent) + ' -> ' +
             str(parent)  + ' -> ' + str(self))
 
         print(ppparent.tag)
         print(pparent.account)
         print(parent.headers)
-        print(parent.withdrawlOrDeposit)        
+        print(parent.withdrawlOrDeposit)
         for line in self.lines:
             self.ledger_line_str(line)
 
@@ -600,11 +620,15 @@ def process(pdf='/Volumes/2019 Google Drive/Google Drive/foolscap/archive/Financ
     log.debug(doc.machine.states.keys())
     log.debug(doc.machine.get_transitions())
     doc.show(line_type="ascii-em", reverse=False, idhidden=False, key=False)
+    doc.to_graphviz(filename="tree.graphviz")
+    doc.machine.get_graph().draw('state_diagram.png', prog='dot')
+
     doc.run()
 
     doc.show(data_property="ledger_str", reverse=False, idhidden=False, key=False)
     #pprint(doc.state)
     #doc.show(line_type="ascii-em", reverse=False, idhidden=False, key=False)
+
 
 
 if __name__ == '__main__':

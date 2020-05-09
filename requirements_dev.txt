@@ -9,3 +9,4 @@ six==1.14.0
 transitions==0.7.2
 treelib==1.6.1
 fire==0.2.1
+pygraphviz==1.5

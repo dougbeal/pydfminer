@@ -1,4 +1,4 @@
--f requirements_dev.txt
+-r requirements.txt
 distro==1.4.0
 numpy==1.18.1
 pandas==1.0.1
